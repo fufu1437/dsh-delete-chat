@@ -1,6 +1,6 @@
 {
   "name": "@fufu1437/dsh-delete-chat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Permanently delete a DeepSeek Harness conversation and every local copy of its data: session log, derived caches, workspace index entries, spill files, and unreferenced attachments.",
   "type": "module",
   "license": "MIT",
