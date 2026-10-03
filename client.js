@@ -4,15 +4,23 @@
  * Two registrations, one operation:
  *
  * - `sidebar.workspaces.session.menu.item` adds "删除对话 / Delete
- *   conversation" to the shipped "..." menu of every Session row
- *   (beside pin/rename/fork/archive);
+ *   conversation" to the shipped "..." menu of every Session row (beside
+ *   pin/rename/fork/archive);
  * - `shell.overlay` owns the confirmation dialog, because the surface must
  *   outlive the row menu it was opened from.
+ *
+ * The flow is deliberately short: choosing the menu row opens the confirmation
+ * immediately, with no pre-delete query, no inventory, and no byte totals.
+ * Confirming closes the dialog at once and starts the deletion in the
+ * background; the sidebar entry vanishes when the Host broadcasts the removal.
+ * Only a failure — a conversation still running, an unreachable Host — comes
+ * back, as a small alert card, because that is the one thing the user must not
+ * miss.
  *
  * The dialog renders its own controls and reads only `--dsw-alias-*` theme
  * tokens, so it matches the host in both themes without importing any Harness
  * Client package. The destructive work happens in the Host half's fenced
- * routes; this module never touches the filesystem.
+ * route; this module never touches the filesystem.
  *
  * @module @fufu1437/dsh-delete-chat/client
  */
@@ -24,7 +32,6 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     const NS = 'fufu-delete-chat'
-    const INSPECT_PATH = '/dsh-delete-chat/inspect'
     const DELETE_PATH = '/dsh-delete-chat/delete'
 
     /* ------------------------------------------------------------------ */
@@ -36,32 +43,16 @@ window.__ModuleLoader__.load({
       'menu.delete.aria': '删除对话「{title}」',
       'dialog.title': '删除对话',
       'dialog.desc': '将永久删除「{title}」及其在本机的全部数据。此操作不可撤销。',
-      'dialog.loading': '正在统计将删除的数据…',
-      'dialog.blocked': '无法删除',
-      'dialog.inventory': '将删除的数据',
-      'dialog.total': '共 {entries} 项，约 {size}',
-      'dialog.descendants': '同时删除 {n} 个子代理会话',
-      'dialog.attachments': '附件：候选 {n} 个，仅在确认没有任何其他会话引用后删除',
-      'dialog.attachments.unproven': '{n} 个附件因无法证实未被引用而保留',
-      'dialog.empty': '没有找到可删除的本地数据。',
+      'dialog.note': '确认后删除在后台执行，本窗口会立即关闭；完成后该对话从侧边栏消失。',
       'dialog.cancel': '取消',
       'dialog.confirm': '永久删除',
-      'dialog.deleting': '正在删除…',
-      'dialog.done': '已删除 {n} 项，释放 {size}',
-      'dialog.done.warn': '，{n} 条警告',
-      'dialog.failed': '{n} 项删除失败，详见 Harness 日志',
       'dialog.close': '关闭',
-      'kind.session-log': '会话日志目录',
-      'kind.session-file': '会话日志文件',
-      'kind.projection-cache': '投影缓存（标题/首条提示）',
-      'kind.spill': '溢写的工具输出',
-      'kind.legacy-feedback': '旧版反馈记录',
-      'kind.attachment': '附件',
+      'dialog.failed.title': '删除失败',
+      'dialog.failed.desc': '「{title}」未能删除：{message}',
       'error.session-live': '该对话正在当前 Harness 进程中打开，Host 仍持有它的日志写入句柄，因此无法安全删除。请重启 Harness 后再试。',
       'error.session-running': '该对话正在运行中，无法删除。请先停止它，重启 Harness 后再试。',
       'error.descendant-live': '该对话的子代理会话仍在当前 Harness 进程中运行，无法删除。请重启 Harness 后再试。',
       'error.invalid-session-id': '会话标识无效。',
-      'error.failed': '操作失败：{message}',
     }
 
     const en = {
@@ -69,44 +60,29 @@ window.__ModuleLoader__.load({
       'menu.delete.aria': 'Delete conversation "{title}"',
       'dialog.title': 'Delete conversation',
       'dialog.desc': 'This permanently erases "{title}" and every copy of its data on this machine. It cannot be undone.',
-      'dialog.loading': 'Measuring what will be deleted…',
-      'dialog.blocked': 'Cannot delete',
-      'dialog.inventory': 'Data to delete',
-      'dialog.total': '{entries} artifact(s), about {size}',
-      'dialog.descendants': 'Also deletes {n} subagent session(s)',
-      'dialog.attachments': 'Attachments: {n} candidate(s), removed only when no other session references them',
-      'dialog.attachments.unproven': '{n} attachment(s) kept because they could not be proven unreferenced',
-      'dialog.empty': 'No local data was found for this conversation.',
+      'dialog.note': 'The deletion runs in the background: this dialog closes now and the sidebar entry disappears when it finishes.',
       'dialog.cancel': 'Cancel',
       'dialog.confirm': 'Delete permanently',
-      'dialog.deleting': 'Deleting…',
-      'dialog.done': 'Deleted {n} artifact(s), freed {size}',
-      'dialog.done.warn': ', {n} warning(s)',
-      'dialog.failed': '{n} artifact(s) failed to delete; see the Harness log',
       'dialog.close': 'Close',
-      'kind.session-log': 'Session log directory',
-      'kind.session-file': 'Session log file',
-      'kind.projection-cache': 'Projection cache (title / first prompt)',
-      'kind.spill': 'Spilled tool output',
-      'kind.legacy-feedback': 'Legacy feedback record',
-      'kind.attachment': 'Attachment',
+      'dialog.failed.title': 'Deletion failed',
+      'dialog.failed.desc': 'Could not delete "{title}": {message}',
       'error.session-live': 'This conversation is open in the current Harness process, which still holds its log write handle, so it cannot be erased safely. Restart the Harness and try again.',
       'error.session-running': 'This conversation is running. Stop it, restart the Harness, and try again.',
       'error.descendant-live': "This conversation's subagent sessions are still live in the current Harness process. Restart the Harness and try again.",
       'error.invalid-session-id': 'The session id is invalid.',
-      'error.failed': 'The operation failed: {message}',
     }
 
     /** Literal fallback used only when the host locale service yields no translator. */
     const FALLBACK = en
-    /** @param t - candidate translator. @returns a translator that always answers. */
-    const translator = (t) => (typeof t === 'function' ? t : (key, params) => interpolate(FALLBACK[key] ?? key, params))
 
     /** @param text - template. @param params - substitutions. @returns the filled template. */
     function interpolate(text, params) {
       if (params === undefined) return text
       return text.replace(/\{(\w+)\}/g, (match, name) => (params[name] === undefined ? match : String(params[name])))
     }
+
+    /** @param t - candidate translator. @returns a translator that always answers. */
+    const translator = (t) => (typeof t === 'function' ? t : (key, params) => interpolate(FALLBACK[key] ?? key, params))
 
     /* ------------------------------------------------------------------ */
     /* Styles (theme tokens only)                                          */
@@ -121,21 +97,15 @@ window.__ModuleLoader__.load({
 .fdc-desc{margin:0;padding:6px 20px 0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-secondary)}
 .fdc-body{display:flex;flex-direction:column;gap:8px;padding:16px 20px 0}
 .fdc-body p{margin:0}
-.fdc-section{font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-secondary)}
-.fdc-list{margin:0;padding:0;list-style:none;border-top:1px solid var(--dsw-alias-border-l1)}
-.fdc-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13px;line-height:18px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-.fdc-row:last-child{border-bottom:none}
 .fdc-muted{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
-.fdc-alert{font-size:13px;line-height:20px;color:var(--dsw-alias-state-warn-primary)}
-.fdc-error{font-size:13px;line-height:20px;color:var(--dsw-alias-state-error-primary)}
-.fdc-ok{font-size:13px;line-height:20px;color:var(--dsw-alias-state-success-primary)}
 .fdc-actions{display:flex;justify-content:flex-end;gap:8px;padding:20px 20px 0}
 .fdc-btn{padding:6px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;cursor:pointer}
 .fdc-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.fdc-btn:disabled{opacity:.5;cursor:default}
 .fdc-btn-danger{background:transparent;border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
-.fdc-spinner{display:inline-block;width:12px;height:12px;margin-right:6px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-brand-primary);border-radius:50%;animation:fdc-spin .8s linear infinite;vertical-align:-2px}
-@keyframes fdc-spin{to{transform:rotate(360deg)}}
+.fdc-toast{position:fixed;right:16px;bottom:16px;z-index:1000;width:min(360px,calc(100vw - 32px));display:flex;flex-direction:column;gap:10px;padding:14px 16px;border:1px solid var(--dsw-alias-border-l4,rgba(0,0,0,.16));border-radius:var(--dsw-radius-panel,12px);background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent,0 12px 32px rgba(0,0,0,.18))}
+.fdc-toast-title{font-size:14px;line-height:20px;font-weight:600;color:var(--dsw-alias-state-error-primary)}
+.fdc-toast-text{margin:0;font-size:13px;line-height:19px;color:var(--dsw-alias-label-secondary)}
+.fdc-toast-actions{display:flex;justify-content:flex-end}
 `
 
     /** The one stylesheet element this bundle owns, removed when the plugin unloads. */
@@ -165,54 +135,51 @@ window.__ModuleLoader__.load({
         }))
     }
 
-    /** @param bytes - byte count. @returns a compact human-readable size. */
-    function formatBytes(bytes) {
-      const value = Number(bytes) || 0
-      if (value < 1024) return `${String(value)} B`
-      const units = ['KB', 'MB', 'GB', 'TB']
-      let scaled = value / 1024
-      let index = 0
-      while (scaled >= 1024 && index < units.length - 1) {
-        scaled /= 1024
-        index += 1
-      }
-      return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[index]}`
-    }
-
     /* ------------------------------------------------------------------ */
-    /* Pending-request store shared by the menu entry and the overlay      */
-    /* ------------------------------------------------------------------ */
-
-    let pending = null
-    const subscribers = new Set()
-    /** @returns the current pending request. */
-    const readPending = () => pending
-    /** @param next - the new pending request, or null. */
-    const writePending = (next) => {
-      pending = next
-      for (const notify of [...subscribers]) notify()
-    }
-    /** @param notify - subscriber. @returns its unsubscribe. */
-    const subscribePending = (notify) => {
-      subscribers.add(notify)
-      return () => { subscribers.delete(notify) }
-    }
-    /** @returns the pending request, re-rendering on change. */
-    const usePending = () => React.useSyncExternalStore(subscribePending, readPending, readPending)
-
-    /* ------------------------------------------------------------------ */
-    /* Host calls                                                          */
+    /* Dialog state                                                        */
     /* ------------------------------------------------------------------ */
 
     /**
-     * POST one JSON body to a Host route and decode its JSON answer.
-     * @param path - the fenced route path.
+     * One observable store for both surfaces. The snapshot object is replaced
+     * only on a write, so `useSyncExternalStore` sees a stable reference
+     * between changes.
+     */
+    const store = (() => {
+      let snapshot = { pending: null, notice: null }
+      const subscribers = new Set()
+      return {
+        /** @returns the current dialog state. */
+        read: () => snapshot,
+        /** @param patch - fields to replace. */
+        write: (patch) => {
+          snapshot = { ...snapshot, ...patch }
+          for (const notify of [...subscribers]) notify()
+        },
+        /** @param notify - subscriber. @returns its unsubscribe. */
+        subscribe: (notify) => {
+          subscribers.add(notify)
+          return () => { subscribers.delete(notify) }
+        },
+      }
+    })()
+
+    /** @returns the dialog state, re-rendering on change. */
+    function useDialogState() {
+      return React.useSyncExternalStore(store.subscribe, store.read, store.read)
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Host call                                                           */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * POST one JSON body to the deletion route and decode its JSON answer.
      * @param body - the request body.
      * @returns the decoded payload.
      * @throws an Error carrying `code` and `status` for a refused request.
      */
-    async function postJson(path, body) {
-      const response = await fetch(path, {
+    async function postDelete(body) {
+      const response = await fetch(DELETE_PATH, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -230,6 +197,23 @@ window.__ModuleLoader__.load({
         throw error
       }
       return payload
+    }
+
+    /**
+     * Turn one background failure into text the user can act on: the localized
+     * reason for a known refusal code, otherwise the Host's own message.
+     * @param reason - the thrown value.
+     * @param translate - the locale translator.
+     * @returns the message to display.
+     */
+    function describeFailure(reason, translate) {
+      const code = reason?.code
+      if (typeof code === 'string') {
+        const key = `error.${code}`
+        const text = translate(key)
+        if (text !== key) return text
+      }
+      return String(reason?.message ?? reason)
     }
 
     /* ------------------------------------------------------------------ */
@@ -255,163 +239,118 @@ window.__ModuleLoader__.load({
           event.preventDefault()
           event.stopPropagation()
           setMenuOpen(false)
-          writePending({ sessionId, displayTitle: title })
+          store.write({ pending: { sessionId, displayTitle: title } })
         },
       }, h(TrashIcon), h('span', null, translate('menu.delete')))
     }
 
     /* ------------------------------------------------------------------ */
-    /* Confirmation dialog                                                 */
+    /* Confirmation                                                        */
     /* ------------------------------------------------------------------ */
 
     /**
-     * The `shell.overlay` entry: nothing while no deletion is pending,
-     * otherwise exactly one dialog for the pending conversation.
+     * The `shell.overlay` entry: the confirmation while one is pending, the
+     * alert for a failed background deletion when one exists, otherwise
+     * nothing.
      * @param props - the locale translator.
-     * @returns the dialog, or null.
+     * @returns the overlay content.
      */
     function DeleteChatDialog({ t }) {
-      const request = usePending()
-      if (request === null) return null
-      return h(DeleteChatForm, { key: request.sessionId, request, t })
+      const { pending, notice } = useDialogState()
+      if (pending !== null) return h(ConfirmDialog, { key: `confirm:${pending.sessionId}`, request: pending, t })
+      if (notice !== null) return h(FailureNotice, { key: `notice:${notice.sessionId}`, notice, t })
+      return null
     }
 
     /**
-     * One deletion's dialog: the inventory preview, the confirm/cancel pair,
-     * and the post-deletion report. All request state dies with the dialog.
+     * The confirmation itself: title, the irreversibility warning, and a note
+     * that the work continues in the background. Confirming closes the dialog
+     * first and then launches the deletion, so the surface never blocks on it.
      * @param props - the pending request and the locale translator.
      * @returns the dialog element.
      */
-    function DeleteChatForm({ request, t }) {
+    function ConfirmDialog({ request, t }) {
       const translate = translator(t)
-      const [phase, setPhase] = React.useState('loading')
-      const [plan, setPlan] = React.useState(null)
-      const [error, setError] = React.useState(null)
-      const [result, setResult] = React.useState(null)
       const cancelRef = React.useRef(null)
-      const busy = phase === 'deleting'
-
-      const close = React.useCallback(() => {
-        if (busy) return
-        writePending(null)
-      }, [busy])
+      const close = React.useCallback(() => { store.write({ pending: null }) }, [])
 
       React.useEffect(() => {
-        let cancelled = false
-        postJson(INSPECT_PATH, { sessionId: request.sessionId })
-          .then((payload) => {
-            if (cancelled) return
-            setPlan(payload)
-            setPhase('ready')
-          })
-          .catch((reason) => {
-            if (cancelled) return
-            setError(reason)
-            setPhase('error')
-          })
-        return () => { cancelled = true }
-      }, [request.sessionId])
-
-      React.useEffect(() => {
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') close()
-        }
+        const onKeyDown = (event) => { if (event.key === 'Escape') close() }
         window.addEventListener('keydown', onKeyDown)
         return () => { window.removeEventListener('keydown', onKeyDown) }
       }, [close])
 
       React.useEffect(() => {
         if (cancelRef.current !== null) cancelRef.current.focus()
-      }, [phase])
+      }, [])
 
       const confirm = () => {
-        setPhase('deleting')
-        setError(null)
-        postJson(DELETE_PATH, { sessionId: request.sessionId })
-          .then((payload) => {
-            setResult(payload)
-            setPhase('done')
-          })
-          .catch((reason) => {
-            setError(reason)
-            setPhase(reason?.status === 409 ? 'blocked' : 'error')
-          })
+        const { sessionId, displayTitle } = request
+        // Close first: the deletion is a background operation from here on.
+        store.write({ pending: null })
+        void postDelete({ sessionId }).catch((reason) => {
+          store.write({ notice: { sessionId, displayTitle, message: describeFailure(reason, translate) } })
+        })
       }
 
-      const blocked = plan?.blocked ?? null
+      return h(DialogShell, {
+        label: translate('dialog.title'),
+        onClose: close,
+      },
+      h('h2', { className: 'fdc-title' }, translate('dialog.title')),
+      h('p', { className: 'fdc-desc' }, translate('dialog.desc', { title: request.displayTitle })),
+      h('div', { className: 'fdc-body' }, h('p', { className: 'fdc-muted' }, translate('dialog.note'))),
+      h('div', { className: 'fdc-actions' },
+        h('button', { type: 'button', className: 'fdc-btn', ref: cancelRef, onClick: close }, translate('dialog.cancel')),
+        h('button', { type: 'button', className: 'fdc-btn fdc-btn-danger', onClick: confirm }, translate('dialog.confirm'))))
+    }
+
+    /**
+     * The alert for a deletion that failed in the background. It is a corner
+     * card rather than a modal: it must not block work the user moved on to,
+     * and it stays until dismissed because it reports lost intent.
+     * @param props - the failure notice and the locale translator.
+     * @returns the alert element.
+     */
+    function FailureNotice({ notice, t }) {
+      const translate = translator(t)
+      const close = React.useCallback(() => { store.write({ notice: null }) }, [])
+      const closeRef = React.useRef(null)
+
+      React.useEffect(() => {
+        const onKeyDown = (event) => { if (event.key === 'Escape') close() }
+        window.addEventListener('keydown', onKeyDown)
+        return () => { window.removeEventListener('keydown', onKeyDown) }
+      }, [close])
+
+      React.useEffect(() => {
+        if (closeRef.current !== null) closeRef.current.focus()
+      }, [])
+
+      return h('div', { className: 'fdc-toast', role: 'alert' },
+        h('div', { className: 'fdc-toast-title' }, translate('dialog.failed.title')),
+        h('p', { className: 'fdc-toast-text' },
+          translate('dialog.failed.desc', { title: notice.displayTitle, message: notice.message })),
+        h('div', { className: 'fdc-toast-actions' },
+          h('button', { type: 'button', className: 'fdc-btn', ref: closeRef, onClick: close }, translate('dialog.close'))))
+    }
+
+    /**
+     * The shared modal frame: a scrim that dismisses on backdrop click, and the
+     * host-styled card that holds one dialog's content.
+     * @param props - the accessible label, the close action, and the content.
+     * @returns the overlay element.
+     */
+    function DialogShell({ label, onClose, children }) {
       return h('div', {
         className: 'fdc-overlay',
-        onMouseDown: (event) => { if (event.target === event.currentTarget) close() },
+        onMouseDown: (event) => { if (event.target === event.currentTarget) onClose() },
       }, h('div', {
         className: 'fdc-card',
         role: 'dialog',
         'aria-modal': true,
-        'aria-label': translate('dialog.title'),
-      },
-      h('h2', { className: 'fdc-title' }, translate('dialog.title')),
-      h('p', { className: 'fdc-desc' }, translate('dialog.desc', { title: request.displayTitle })),
-
-      h('div', { className: 'fdc-body' },
-        phase === 'loading' && h('div', { className: 'fdc-muted', role: 'status' },
-          h('span', { className: 'fdc-spinner' }), translate('dialog.loading')),
-
-        plan !== null && phase !== 'loading' && h(Inventory, { plan, translate }),
-
-        blocked !== null && h('div', { className: 'fdc-error', role: 'alert' },
-        h('strong', null, `${translate('dialog.blocked')}: `),
-        translate(`error.${String(blocked.code)}`) === `error.${String(blocked.code)}`
-          ? String(blocked.message ?? '')
-          : translate(`error.${String(blocked.code)}`)),
-
-        error !== null && phase !== 'blocked' && h('div', { className: 'fdc-error', role: 'alert' },
-          translate('error.failed', { message: String(error.message ?? error) })),
-
-        result !== null && h('div', { className: 'fdc-ok', role: 'status' },
-          translate('dialog.done', { n: result.deleted.length, size: formatBytes(result.removedBytes) }),
-          (result.warnings?.length ?? 0) > 0 ? translate('dialog.done.warn', { n: result.warnings.length }) : '',
-          (result.failures?.length ?? 0) > 0 ? ` — ${translate('dialog.failed', { n: result.failures.length })}` : '')),
-
-      h('div', { className: 'fdc-actions' },
-        phase === 'done'
-          ? h('button', { type: 'button', className: 'fdc-btn', onClick: close }, translate('dialog.close'))
-          : h('button', { type: 'button', className: 'fdc-btn', ref: cancelRef, disabled: busy, onClick: close }, translate('dialog.cancel')),
-        phase !== 'done' && h('button', {
-          type: 'button',
-          className: 'fdc-btn fdc-btn-danger',
-          disabled: busy || blocked !== null || plan === null,
-          onClick: confirm,
-        }, busy ? translate('dialog.deleting') : translate('dialog.confirm')))))
-    }
-
-    /**
-     * The measured inventory, grouped by artifact kind.
-     * @param props - the plan and the locale translator.
-     * @returns the summary block.
-     */
-    function Inventory({ plan, translate }) {
-      const groups = new Map()
-      for (const entry of plan.inventory ?? []) {
-        const group = groups.get(entry.kind) ?? { kind: entry.kind, count: 0, bytes: 0 }
-        group.count += 1
-        group.bytes += entry.bytes ?? 0
-        groups.set(entry.kind, group)
-      }
-      const rows = [...groups.values()]
-      return h(React.Fragment, null,
-        h('div', { className: 'fdc-section' }, translate('dialog.inventory')),
-        rows.length === 0
-          ? h('p', { className: 'fdc-muted' }, translate('dialog.empty'))
-          : h('ul', { className: 'fdc-list' }, rows.map(group => h('li', { className: 'fdc-row', key: group.kind },
-              h('span', null, translate(`kind.${group.kind}`)),
-              h('span', { className: 'fdc-muted' }, `${String(group.count)} · ${formatBytes(group.bytes)}`)))),
-        h('p', { className: 'fdc-muted' },
-          translate('dialog.total', { entries: plan.totals?.entries ?? 0, size: formatBytes(plan.totals?.bytes ?? 0) })),
-        (plan.descendants?.length ?? 0) > 0
-          ? h('p', { className: 'fdc-alert' }, translate('dialog.descendants', { n: plan.descendants.length }))
-          : null,
-        (plan.attachmentCandidates ?? 0) > 0
-          ? h('p', { className: 'fdc-muted' }, translate('dialog.attachments', { n: plan.attachmentCandidates }))
-          : null)
+        'aria-label': label,
+      }, children))
     }
 
     /* ------------------------------------------------------------------ */

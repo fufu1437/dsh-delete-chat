@@ -4,9 +4,10 @@ A DeepSeek Harness (DSH) plugin that **permanently deletes one conversation**
 together with every local copy of its data.
 
 Every Session row in the sidebar gains a "Delete conversation…" entry in its
-`…` menu. It opens a confirmation dialog that first lists what
-would be removed and how much space it occupies; nothing happens until you
-confirm.
+`…` menu. It opens the confirmation at once — no preview request, no artifact
+inventory, no byte totals — and confirming runs the deletion **in the
+background**: the dialog closes immediately and the sidebar entry disappears
+when the Host broadcasts the removal.
 
 > 中文文档：[README.zh.md](README.zh.md)
 
@@ -95,10 +96,14 @@ half takes effect as the page loads.
 
 1. Hover a conversation row in the left sidebar and open its `…` menu;
 2. choose "Delete conversation…";
-3. the dialog lists artifact classes, entry counts, and total size — or the
-   refusal reason when deletion is blocked (for example, a running turn);
-4. press "Delete permanently", then read the freed-byte summary and any
-   warnings or failures.
+3. the dialog shows the title, the irreversibility warning, and Cancel / Delete
+   permanently — nothing is measured or listed first;
+4. press "Delete permanently": the dialog closes, the deletion continues in the
+   background, and the row disappears when the Host broadcasts the removal.
+
+Only a failure returns to the UI: a refused deletion (409 — for example a
+running conversation) raises a dismissible alert card in the corner with the
+reason.
 
 ## Configuration
 
@@ -150,8 +155,9 @@ context, and asserts **what survived**:
 `.tmp/e2e.mjs` is an end-to-end script against the **running Host** (never
 published): it mints the same browser-session cookie the page uses, creates a
 synthetic session in the real DSH home (log + projection cache + spill +
-attachment), calls inspect/delete through the real trust fence, asserts the
-artifacts are gone, and verifies that a live conversation is refused with 409.
+attachment), calls delete through the real trust fence, asserts the artifacts
+are gone, and verifies that a live conversation is refused with 409 and that
+the removed `/inspect` route is gone.
 It needs write access and cleans up after itself.
 
 `.tmp/proof-scan.mjs` runs the full attachment proof read-only over the real

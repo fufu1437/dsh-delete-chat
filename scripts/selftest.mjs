@@ -14,7 +14,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
-import { executeDeletion, planDeletion, resolveConfig, __test } from '../index.js'
+import { executeDeletion, planAttachments, planDeletion, resolveConfig, __test } from '../index.js'
 
 const { attachmentPaths, projectKey, spillSessionDir } = __test
 
@@ -231,18 +231,20 @@ console.log('\nplan: a non-live conversation is deletable')
 const ctx = makeCtx()
 const plan = await planDeletion(ctx, config, TARGET)
 check('plan is not blocked', plan.blocked === undefined)
-check('plan finds the live log directory', plan.inventory.some(entry => entry.kind === 'session-log' && entry.path === join(projectDir, TARGET)))
-check('plan finds the loose generation file', plan.inventory.some(entry => entry.kind === 'session-file' && entry.path === join(projectDir, `${TARGET}.v2.jsonl.zstd`)))
-check('plan finds the projection cache', plan.inventory.some(entry => entry.kind === 'projection-cache' && entry.path.endsWith(`${TARGET}.json`)))
-check('plan finds the projection-cache backup', plan.inventory.some(entry => entry.path.endsWith(`${TARGET}.json.bak.123`)))
-check('plan finds the spill directory', plan.inventory.some(entry => entry.kind === 'spill'))
-check('plan does not touch another session', !plan.inventory.some(entry => entry.path.includes(OTHER)))
-equal('preview counts one exclusive attachment candidate', plan.attachmentCandidates, 1)
-equal('preview does not run the global proof', plan.attachmentsDeletable, 0)
-check('plan total counts bytes', plan.totals.bytes > 0)
+const targetTree = plan.trees.find(tree => tree.isTarget)
+check('plan finds the live log directory', targetTree.sessionArtifacts.dirs.includes(join(projectDir, TARGET)))
+check('plan finds the loose generation file', targetTree.sessionArtifacts.files.includes(join(projectDir, `${TARGET}.v2.jsonl.zstd`)))
+check('plan finds the projection cache', targetTree.projectionCache.some(path => path.endsWith(`${TARGET}.json`)))
+check('plan finds the projection-cache backup', targetTree.projectionCache.some(path => path.endsWith(`${TARGET}.json.bak.123`)))
+equal('plan finds the spill directory', targetTree.spillDirs.length, 1)
+check('plan does not touch another session', !JSON.stringify(plan.trees).includes(OTHER))
+check('plan builds no inventory', plan.inventory === undefined)
+check('plan reports no totals', plan.totals === undefined)
+equal('plan collected one attachment candidate', plan.attachmentIds.length, 1)
 
-const provenPlan = await planDeletion(ctx, config, TARGET, { proveAttachments: true })
-equal('proven plan marks the exclusive attachment deletable', provenPlan.attachmentsDeletable, 1)
+console.log('\nattachment proof: the exclusive attachment is unreferenced')
+const proven = await planAttachments(config, [TARGET], plan.attachmentIds)
+equal('the proof marks the exclusive attachment deletable', proven.deletable.length, 1)
 
 console.log('\nexecute: every artifact class is erased, shared bytes survive')
 const result = await executeDeletion(ctx, config, plan)
@@ -279,7 +281,7 @@ equal('only the deleted attachment left the upload cache', llm.records.length, 1
 equal('the surviving upload record is the shared one', llm.records[0].attachmentId, SHARED)
 
 check('no failures recorded', result.failures.length === 0)
-check('removed bytes reported', result.removedBytes > 0)
+check('the report carries no byte total', result.removedBytes === undefined)
 check('client removal notification emitted', ctx.emitted.some(([event, id]) => event === 'api-session/removed' && id === TARGET))
 
 console.log('\nrefusals: a live or running conversation is never touched')
@@ -295,7 +297,7 @@ await buildFixture()
 const treeCtx = makeCtx({ childOfTarget: true })
 const treePlan = await planDeletion(treeCtx, config, TARGET)
 equal('plan reports one descendant', treePlan.descendants.length, 1)
-check('plan covers the child log', treePlan.inventory.some(entry => entry.kind === 'session-log' && entry.path === join(projectDir, CHILD)))
+check('plan covers the child log', treePlan.trees.some(tree => !tree.isTarget && tree.sessionArtifacts.dirs.includes(join(projectDir, CHILD))))
 const treeResult = await executeDeletion(treeCtx, config, treePlan)
 check('child log removed', !exists(join(projectDir, CHILD)))
 check('child removal notified', treeCtx.emitted.some(([event, id]) => event === 'api-session/removed' && id === CHILD))
@@ -311,9 +313,10 @@ await buildFixture()
 // A sibling artifact that cannot be decompressed makes the proof incomplete.
 await write(join(projectDir, OTHER, 'session.v4.jsonl.zstd'), Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0xff, 0xff, 0xff, 0xff]))
 const unreadableCtx = makeCtx()
-const unprovenPlan = await planDeletion(unreadableCtx, config, TARGET, { proveAttachments: true })
-equal('no attachment is proven deletable', unprovenPlan.attachmentsDeletable, 0)
-equal('the candidate is reported unproven', unprovenPlan.attachmentsUnproven, 1)
+const unprovenPlan = await planDeletion(unreadableCtx, config, TARGET)
+const unproven = await planAttachments(config, [TARGET], unprovenPlan.attachmentIds)
+equal('no attachment is proven deletable', unproven.deletable.length, 0)
+equal('the candidate is reported unproven', unproven.unproven.length, 1)
 const unprovenResult = await executeDeletion(unreadableCtx, config, unprovenPlan)
 check('attachment bytes kept when the proof is incomplete', exists(attachmentPaths(config, EXCLUSIVE)[0]))
 check('a warning explains the kept attachment', unprovenResult.warnings.some(warning => warning.includes('could not be proven')))
@@ -321,12 +324,12 @@ check('a warning explains the kept attachment', unprovenResult.warnings.some(war
 console.log('\nattachment proof: an exhausted byte budget keeps the bytes')
 await buildFixture()
 const budgetedCtx = makeCtx()
-const budgetedPlan = await planDeletion(budgetedCtx, config, TARGET, { proveAttachments: true })
-equal('a truncated scan proves nothing', budgetedPlan.attachmentsDeletable, 0)
-equal('the candidate is reported unproven after truncation', budgetedPlan.attachmentsUnproven, 1)
+const budgetedPlan = await planDeletion(budgetedCtx, config, TARGET)
 const tinyConfig = { ...config, scanByteLimit: 8 }
-const tinyPlan = await planDeletion(budgetedCtx, tinyConfig, TARGET, { proveAttachments: true })
-equal('a tiny byte budget truncates the proof', tinyPlan.attachmentsUnproven, 1)
+const tinyCandidates = await __test.collectCandidateAttachmentIds(tinyConfig, [TARGET])
+const tinyProof = await planAttachments(tinyConfig, [TARGET], tinyCandidates)
+equal('a truncated scan proves nothing', tinyProof.deletable.length, 0)
+equal('a tiny byte budget leaves the candidate unproven', tinyProof.unproven.length, 1)
 
 console.log('\npath safety: a hostile session id cannot escape the roots')
 const hostile = await planDeletion(makeCtx(), config, '../../etc/passwd')

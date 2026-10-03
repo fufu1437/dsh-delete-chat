@@ -1,13 +1,15 @@
 /**
  * Host half of `@fufu1437/dsh-delete-chat`.
  *
- * One operation — *thoroughly delete one conversation* — behind two
- * connection-fenced HTTP routes the browser half calls:
+ * One operation — *thoroughly delete one conversation* — behind one
+ * connection-fenced HTTP route the browser half calls:
  *
- * - `POST /dsh-delete-chat/inspect` reports exactly what a deletion would
- *   remove, and why it is blocked when it is.
  * - `POST /dsh-delete-chat/delete` performs the deletion and returns a
  *   per-artifact report.
+ *
+ * The Host keeps no pre-delete statistics: there is no preview route, no
+ * artifact inventory, and no byte measurement, so a deletion starts the moment
+ * the user confirms and nothing is traversed twice.
  *
  * "Thorough" is a fixed superset of the durable footprints a DSH conversation
  * leaves on this machine:
@@ -58,8 +60,6 @@ export const inject = ['webServer', 'connection']
 
 /** Route prefix owned by this plugin. */
 const ROUTE_PREFIX = '/dsh-delete-chat'
-/** Preview route: what a deletion would remove, and whether it is blocked. */
-export const INSPECT_PATH = `${ROUTE_PREFIX}/inspect`
 /** Destructive route: performs the deletion. */
 export const DELETE_PATH = `${ROUTE_PREFIX}/delete`
 
@@ -211,37 +211,6 @@ async function readdirSafe(path, options) {
   } catch {
     return []
   }
-}
-
-/**
- * Recursively measure one path without following failures.
- * @param path - file or directory.
- * @returns `{ bytes, files }`, or undefined when the path does not exist.
- */
-async function measure(path) {
-  const info = await statSafe(path)
-  if (info === undefined) return undefined
-  if (info.isFile()) return { bytes: info.size, files: 1 }
-  if (!info.isDirectory()) return { bytes: 0, files: 0 }
-  let bytes = 0
-  let files = 0
-  for (const entry of await readdirSafe(path, { withFileTypes: true })) {
-    const child = join(path, entry.name)
-    if (entry.isDirectory()) {
-      const nested = await measure(child)
-      if (nested !== undefined) {
-        bytes += nested.bytes
-        files += nested.files
-      }
-    } else if (entry.isFile()) {
-      const fileInfo = await statSafe(child)
-      if (fileInfo !== undefined) {
-        bytes += fileInfo.size
-        files += 1
-      }
-    }
-  }
-  return { bytes, files }
 }
 
 /** @param values - candidates. @returns them in insertion order without duplicates. */
@@ -638,17 +607,20 @@ export async function collectDescendants(ctx, id) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Build the complete deletion plan for one conversation without changing
- * anything. Every path is checked for existence so the preview the user
- * confirms is the set of artifacts the deletion actually addresses.
+ * Resolve one conversation's deletion targets: what exists, whether the
+ * conversation may be deleted at all, and which durable subagent sessions go
+ * with it. Nothing here measures or reports sizes, and no inventory is built —
+ * the Host keeps no pre-delete statistics, and the confirmation dialog shows
+ * none.
+ *
+ * Attachment candidates are collected here because they can only be read while
+ * the logs still exist; the global reference proof runs inside the deletion.
  * @param ctx - Host context.
  * @param config - resolved configuration.
  * @param id - the session id to delete.
- * @param options - `proveAttachments` runs the global reference proof during
- *   planning; the default counts candidates only, keeping the preview fast.
- * @returns the plan, including the blocking reason when deletion is refused.
+ * @returns located targets plus the blocking reason when deletion is refused.
  */
-export async function planDeletion(ctx, config, id, options = {}) {
+export async function planDeletion(ctx, config, id) {
   if (typeof id !== 'string' || id.length === 0 || id.length > SESSION_ID_MAX_LENGTH) {
     return { sessionId: id, blocked: { code: 'invalid-session-id', message: 'session id must be a non-empty string of at most 200 characters' } }
   }
@@ -691,84 +663,9 @@ export async function planDeletion(ctx, config, id, options = {}) {
     })
   }
 
-  const inventory = []
-  for (const tree of trees) {
-    const suffix = tree.isTarget ? '' : ` (subagent ${tree.id})`
-    const push = (kind, label, paths) => {
-      for (const path of paths) inventory.push({ kind, label: `${label}${suffix}`, path })
-    }
-    push('session-log', 'Session log directory', tree.sessionArtifacts.dirs)
-    push('session-file', 'Session log file', tree.sessionArtifacts.files)
-    push('projection-cache', 'Projection cache (title and prompt cache)', tree.projectionCache)
-    push('spill', 'Spilled tool output', tree.spillDirs)
-  }
-
-  const legacyFeedbackFile = join(config.storagesRoot, 'message_feedback.json')
-  for (const tree of trees) {
-    const keys = projectionCacheKeys(tree.id)
-    if (existsSync(legacyFeedbackFile) && await hasUnitKey(legacyFeedbackFile, 'sessions', keys)) {
-      inventory.push({ kind: 'legacy-feedback', label: `Legacy feedback sidecar record (${tree.id})`, path: legacyFeedbackFile })
-    }
-  }
-
-  // The preview never runs the global attachment proof: reading every
-  // surviving session is the deletion's expensive final step, so the plan only
-  // counts candidates and the executor proves them.
   const attachmentIds = config.deleteAttachments ? await collectCandidateAttachmentIds(config, targetIds) : []
-  const attachments = config.deleteAttachments
-    ? (options.proveAttachments === true
-        ? await planAttachments(config, targetIds, attachmentIds)
-        : { candidates: attachmentIds, deletable: [], referenced: [], unproven: [] })
-    : { candidates: [], deletable: [], referenced: [], unproven: [] }
-  for (const attachmentId of attachments.deletable) {
-    for (const path of attachmentPaths(config, attachmentId)) {
-      if (await exists(path)) inventory.push({ kind: 'attachment', label: `Attachment ${attachmentId}`, path })
-    }
-  }
 
-  let bytes = 0
-  let files = 0
-  for (const entry of inventory) {
-    const size = await measure(entry.path)
-    entry.bytes = size?.bytes ?? 0
-    entry.files = size?.files ?? 0
-    bytes += entry.bytes
-    files += entry.files
-  }
-
-  return {
-    sessionId: id,
-    live,
-    running,
-    header: facts?.header,
-    blocked,
-    descendants,
-    trees,
-    inventory,
-    totals: { entries: inventory.length, bytes, files },
-    attachmentIds,
-    attachmentCandidates: attachments.candidates.length,
-    attachmentsDeletable: attachments.deletable.length,
-    attachmentsReferenced: attachments.referenced.length,
-    attachmentsUnproven: attachments.unproven.length,
-  }
-}
-
-/**
- * @param file - a storage-json unit file.
- * @param table - table name.
- * @param keys - candidate keys.
- * @returns whether any candidate key exists in the table.
- */
-async function hasUnitKey(file, table, keys) {
-  try {
-    const doc = JSON.parse(await readFile(file, 'utf8'))
-    const bucket = doc?.tables?.[table]
-    if (bucket === null || typeof bucket !== 'object') return false
-    return keys.some(key => Object.prototype.hasOwnProperty.call(bucket, key))
-  } catch {
-    return false
-  }
+  return { sessionId: id, live, running, header: facts?.header, blocked, descendants, trees, attachmentIds }
 }
 
 /** @param path - candidate. @returns whether it exists. */
@@ -787,7 +684,7 @@ async function exists(path) {
  * @param ctx - Host context.
  * @param config - resolved configuration.
  * @param plan - a plan from {@link planDeletion}.
- * @returns per-artifact results, failures, freed bytes, and warnings.
+ * @returns per-artifact results, failures, and warnings.
  */
 export async function executeDeletion(ctx, config, plan) {
   const deleted = []
@@ -796,10 +693,9 @@ export async function executeDeletion(ctx, config, plan) {
   const trees = plan.trees ?? []
 
   const removePath = async (kind, path) => {
-    const size = await measure(path)
     try {
       await rm(path, { recursive: true, force: true })
-      deleted.push({ kind, path, bytes: size?.bytes ?? 0, files: size?.files ?? 0 })
+      deleted.push({ kind, path })
     } catch (error) {
       failures.push({ kind, path, message: String(error?.message ?? error) })
     }
@@ -819,7 +715,7 @@ export async function executeDeletion(ctx, config, plan) {
           if (!workspace.sessionIds.includes(tree.id)) continue
           try {
             await workspace.detachSession(tree.id)
-            deleted.push({ kind: 'workspace-account', path: `${String(workspace.id)}:${tree.id}`, bytes: 0, files: 0 })
+            deleted.push({ kind: 'workspace-account', path: `${String(workspace.id)}:${tree.id}` })
           } catch (error) {
             warnings.push(`workspace account entry kept for ${tree.id}: ${String(error?.message ?? error)}`)
           }
@@ -893,8 +789,7 @@ export async function executeDeletion(ctx, config, plan) {
     }
   }
 
-  const removedBytes = deleted.reduce((total, entry) => total + entry.bytes, 0)
-  return { deleted, failures, warnings, removedBytes }
+  return { deleted, failures, warnings }
 }
 
 /**
@@ -933,7 +828,7 @@ async function cleanWorkspaceSidecar(config, ids, deleted, warnings) {
     }
     if (changed) {
       await writeJsonAtomic(file, doc)
-      deleted.push({ kind: 'workspace-index', path: file, bytes: 0, files: 1 })
+      deleted.push({ kind: 'workspace-index', path: file })
     }
   } catch (error) {
     warnings.push(`${file} left untouched: ${String(error?.message ?? error)}`)
@@ -954,7 +849,7 @@ async function editSidecar(file, table, keys, kind, deleted, warnings) {
   if (!(await exists(file))) return
   try {
     const dropped = await removeUnitKeys(file, table, keys)
-    if (dropped > 0) deleted.push({ kind, path: file, bytes: 0, files: 0 })
+    if (dropped > 0) deleted.push({ kind, path: file })
   } catch (error) {
     warnings.push(`${file} left untouched: ${String(error?.message ?? error)}`)
   }
@@ -983,9 +878,8 @@ async function pruneLlmUploadCache(config, attachmentIds, deleted, warnings) {
         if (typeof record.variantId === 'string' && ATTACHMENT_ID_PATTERN.test(record.variantId)) {
           const path = requestImagePath(config, record.variantId)
           if (await exists(path)) {
-            const size = await measure(path)
             await rm(path, { recursive: true, force: true })
-            deleted.push({ kind: 'request-image', path, bytes: size?.bytes ?? 0, files: size?.files ?? 1 })
+            deleted.push({ kind: 'request-image', path })
           }
         }
         continue
@@ -995,7 +889,7 @@ async function pruneLlmUploadCache(config, attachmentIds, deleted, warnings) {
     if (dropped > 0) {
       doc.records = kept
       await writeJsonAtomic(file, doc)
-      deleted.push({ kind: 'llm-upload-cache', path: file, bytes: 0, files: dropped })
+      deleted.push({ kind: 'llm-upload-cache', path: file })
     }
   } catch (error) {
     warnings.push(`${file} left untouched: ${String(error?.message ?? error)}`)
@@ -1075,51 +969,12 @@ function parseBody(text) {
 }
 
 /**
- * Host plugin body: register the two fenced routes.
+ * Host plugin body: register the one fenced deletion route.
  * @param ctx - Host context.
  * @param config - the Loader row's config.
  */
 export function apply(ctx, config) {
   const resolved = resolveConfig(config)
-
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: INSPECT_PATH,
-    handler: async (req, res) => {
-      const rejection = connectionOf(ctx).requestRejection(req)
-      if (rejection !== undefined) {
-        res.statusCode = rejection
-        res.end()
-        return
-      }
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      if (String(req.headers['content-type']).split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
-        sendJson(res, 415, { ok: false, code: 'unsupported-media-type', message: 'content-type must be application/json' })
-        return
-      }
-      const text = await readBoundedBody(req)
-      if (text === null) {
-        sendJson(res, 413, { ok: false, code: 'body-too-large', message: `request body must be at most ${String(MAX_BODY_BYTES)} bytes` })
-        return
-      }
-      const parsed = parseBody(text)
-      if (parsed === undefined) {
-        sendJson(res, 400, { ok: false, code: 'invalid-request', message: 'body must be a JSON object with a non-empty string sessionId' })
-        return
-      }
-      try {
-        const plan = await planDeletion(ctx, resolved, parsed.sessionId)
-        const { blocked, ...rest } = plan
-        sendJson(res, 200, { ok: true, ...rest, blocked })
-      } catch (error) {
-        ctx.logger?.warn?.(`dsh-delete-chat: inspect failed: ${String(error?.message ?? error)}`)
-        sendJson(res, 500, { ok: false, code: 'inspect-failed', message: String(error?.message ?? error) })
-      }
-    },
-  }), `dsh-delete-chat: POST ${INSPECT_PATH}`)
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -1156,7 +1011,7 @@ export function apply(ctx, config) {
       try {
         plan = await planDeletion(ctx, effective, parsed.sessionId)
       } catch (error) {
-        sendJson(res, 500, { ok: false, code: 'inspect-failed', message: String(error?.message ?? error) })
+        sendJson(res, 500, { ok: false, code: 'resolve-failed', message: String(error?.message ?? error) })
         return
       }
       if (plan.blocked !== undefined) {
@@ -1166,7 +1021,7 @@ export function apply(ctx, config) {
       try {
         const result = await executeDeletion(ctx, effective, plan)
         ctx.logger?.info?.(
-          `dsh-delete-chat: deleted conversation ${parsed.sessionId} (${String(result.deleted.length)} artifacts, ${String(result.removedBytes)} bytes)`,
+          `dsh-delete-chat: deleted conversation ${parsed.sessionId} (${String(result.deleted.length)} artifacts)`,
         )
         sendJson(res, 200, {
           ok: true,
@@ -1175,7 +1030,6 @@ export function apply(ctx, config) {
           deleted: result.deleted,
           failures: result.failures,
           warnings: result.warnings,
-          removedBytes: result.removedBytes,
         })
       } catch (error) {
         ctx.logger?.warn?.(`dsh-delete-chat: delete failed for ${parsed.sessionId}: ${String(error?.message ?? error)}`)
