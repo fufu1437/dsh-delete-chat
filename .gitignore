@@ -1,0 +1,16 @@
+# Dependencies and local state
+node_modules/
+pnpm-lock.yaml
+.npm/
+*.tgz
+
+# Test scratch space
+.tmp/
+coverage/
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

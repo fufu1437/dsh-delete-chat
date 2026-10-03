@@ -1,0 +1,7 @@
+# Bundle layer of @fufu1437/dsh-delete-chat.
+#
+# One Host row serves the fenced deletion routes; the package's `dsh.client`
+# section composes the browser half that renders the sidebar action.
+- insert:
+    - id: fufu-delete-chat
+      name: '@fufu1437/dsh-delete-chat'

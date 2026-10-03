@@ -1,0 +1,67 @@
+{
+  "name": "@fufu1437/dsh-delete-chat",
+  "version": "0.1.0",
+  "description": "Thoroughly delete a DeepSeek Harness conversation: session log, derived caches, workspace index entries, spill files, and unreferenced attachments.",
+  "type": "module",
+  "license": "MIT",
+  "author": "fufu1437",
+  "homepage": "https://github.com/fufu1437/dsh-delete-chat",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fufu1437/dsh-delete-chat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fufu1437/dsh-delete-chat/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "dsh-bundle",
+    "cordis",
+    "privacy",
+    "delete",
+    "session"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js",
+    "test": "node scripts/selftest.mjs",
+    "prepublishOnly": "pnpm run check && pnpm test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}
