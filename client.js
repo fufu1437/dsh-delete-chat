@@ -115,22 +115,25 @@ window.__ModuleLoader__.load({
     const CSS = `
 .fdc-menu-item{display:flex;align-items:center;gap:8px;width:100%;padding:6px 10px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-state-error-primary);font:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer}
 .fdc-menu-item:hover{background:var(--dsw-alias-bg-layer-2)}
-.fdc-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb, var(--dsw-alias-bg-base) 72%, transparent)}
-.fdc-card{width:min(460px,calc(100vw - 32px));max-height:min(560px,80vh);overflow:auto;padding:16px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 12px 32px color-mix(in srgb, var(--dsw-alias-bg-base) 55%, transparent)}
-.fdc-title{margin:0 0 6px;font-size:15px;font-weight:600}
-.fdc-desc{margin:0 0 12px;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
-.fdc-section{margin:12px 0 4px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);text-transform:none}
+.fdc-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.24));backdrop-filter:var(--dsw-mask-blur,none)}
+.fdc-card{box-sizing:border-box;display:flex;flex-direction:column;width:min(400px,100%);max-height:min(560px,calc(100vh - 48px));overflow:auto;padding:0 0 20px;border:1px solid var(--dsw-alias-border-l4,rgba(0,0,0,.16));border-radius:var(--dsw-radius-panel,16px);background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-prominent,0 12px 32px rgba(0,0,0,.18))}
+.fdc-title{margin:0;padding:20px 20px 0;font-size:16px;line-height:24px;font-weight:500;color:var(--dsw-alias-label-primary)}
+.fdc-desc{margin:0;padding:6px 20px 0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-secondary)}
+.fdc-body{display:flex;flex-direction:column;gap:8px;padding:16px 20px 0}
+.fdc-body p{margin:0}
+.fdc-section{font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-secondary)}
 .fdc-list{margin:0;padding:0;list-style:none;border-top:1px solid var(--dsw-alias-border-l1)}
-.fdc-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:12.5px;line-height:18px;border-bottom:1px solid var(--dsw-alias-border-l1)}
-.fdc-muted{color:var(--dsw-alias-label-secondary)}
-.fdc-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-.fdc-btn{padding:6px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer}
-.fdc-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}
+.fdc-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;font-size:13px;line-height:18px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.fdc-row:last-child{border-bottom:none}
+.fdc-muted{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.fdc-alert{font-size:13px;line-height:20px;color:var(--dsw-alias-state-warn-primary)}
+.fdc-error{font-size:13px;line-height:20px;color:var(--dsw-alias-state-error-primary)}
+.fdc-ok{font-size:13px;line-height:20px;color:var(--dsw-alias-state-success-primary)}
+.fdc-actions{display:flex;justify-content:flex-end;gap:8px;padding:20px 20px 0}
+.fdc-btn{padding:6px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;cursor:pointer}
+.fdc-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .fdc-btn:disabled{opacity:.5;cursor:default}
 .fdc-btn-danger{background:transparent;border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}
-.fdc-alert{margin:10px 0 0;font-size:12.5px;line-height:1.5;color:var(--dsw-alias-state-warn-primary)}
-.fdc-error{margin:10px 0 0;font-size:12.5px;line-height:1.5;color:var(--dsw-alias-state-error-primary)}
-.fdc-ok{margin:10px 0 0;font-size:12.5px;line-height:1.5;color:var(--dsw-alias-state-success-primary)}
 .fdc-spinner{display:inline-block;width:12px;height:12px;margin-right:6px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-brand-primary);border-radius:50%;animation:fdc-spin .8s linear infinite;vertical-align:-2px}
 @keyframes fdc-spin{to{transform:rotate(360deg)}}
 `
@@ -348,24 +351,25 @@ window.__ModuleLoader__.load({
       h('h2', { className: 'fdc-title' }, translate('dialog.title')),
       h('p', { className: 'fdc-desc' }, translate('dialog.desc', { title: request.displayTitle })),
 
-      phase === 'loading' && h('div', { className: 'fdc-muted', role: 'status' },
-        h('span', { className: 'fdc-spinner' }), translate('dialog.loading')),
+      h('div', { className: 'fdc-body' },
+        phase === 'loading' && h('div', { className: 'fdc-muted', role: 'status' },
+          h('span', { className: 'fdc-spinner' }), translate('dialog.loading')),
 
-      plan !== null && phase !== 'loading' && h(Inventory, { plan, translate }),
+        plan !== null && phase !== 'loading' && h(Inventory, { plan, translate }),
 
-      blocked !== null && h('div', { className: 'fdc-error', role: 'alert' },
+        blocked !== null && h('div', { className: 'fdc-error', role: 'alert' },
         h('strong', null, `${translate('dialog.blocked')}: `),
         translate(`error.${String(blocked.code)}`) === `error.${String(blocked.code)}`
           ? String(blocked.message ?? '')
           : translate(`error.${String(blocked.code)}`)),
 
-      error !== null && phase !== 'blocked' && h('div', { className: 'fdc-error', role: 'alert' },
-        translate('error.failed', { message: String(error.message ?? error) })),
+        error !== null && phase !== 'blocked' && h('div', { className: 'fdc-error', role: 'alert' },
+          translate('error.failed', { message: String(error.message ?? error) })),
 
-      result !== null && h('div', { className: 'fdc-ok', role: 'status' },
-        translate('dialog.done', { n: result.deleted.length, size: formatBytes(result.removedBytes) }),
-        (result.warnings?.length ?? 0) > 0 ? translate('dialog.done.warn', { n: result.warnings.length }) : '',
-        (result.failures?.length ?? 0) > 0 ? ` — ${translate('dialog.failed', { n: result.failures.length })}` : ''),
+        result !== null && h('div', { className: 'fdc-ok', role: 'status' },
+          translate('dialog.done', { n: result.deleted.length, size: formatBytes(result.removedBytes) }),
+          (result.warnings?.length ?? 0) > 0 ? translate('dialog.done.warn', { n: result.warnings.length }) : '',
+          (result.failures?.length ?? 0) > 0 ? ` — ${translate('dialog.failed', { n: result.failures.length })}` : '')),
 
       h('div', { className: 'fdc-actions' },
         phase === 'done'
