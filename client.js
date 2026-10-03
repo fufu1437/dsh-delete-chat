@@ -135,16 +135,23 @@ window.__ModuleLoader__.load({
 @keyframes fdc-spin{to{transform:rotate(360deg)}}
 `
 
-    let styleInjected = false
-    /** Inject the shared stylesheet exactly once per bundle. */
-    function ensureStyles() {
-      if (styleInjected) return
-      styleInjected = true
-      if (typeof document === 'undefined') return
-      const element = document.createElement('style')
-      element.setAttribute('data-dsh-plugin', NS)
-      element.textContent = CSS
-      document.head.appendChild(element)
+    /** The one stylesheet element this bundle owns, removed when the plugin unloads. */
+    let styleElement = null
+
+    /** Create the shared stylesheet once; its owner is the plugin effect. */
+    function mountStyles() {
+      if (styleElement !== null || typeof document === 'undefined') return
+      styleElement = document.createElement('style')
+      styleElement.setAttribute('data-dsh-plugin', NS)
+      styleElement.textContent = CSS
+      document.head.appendChild(styleElement)
+    }
+
+    /** Remove the stylesheet; safe before mount and after an earlier removal. */
+    function unmountStyles() {
+      if (styleElement === null) return
+      styleElement.remove()
+      styleElement = null
     }
 
     function TrashIcon() {
@@ -233,7 +240,6 @@ window.__ModuleLoader__.load({
      * @returns the menu row.
      */
     function DeleteChatMenuItem({ sessionId, displayTitle, useMenuOpenState, t }) {
-      ensureStyles()
       const translate = translator(t)
       const [, setMenuOpen] = useMenuOpenState()
       const title = displayTitle !== undefined && displayTitle !== '' ? displayTitle : sessionId
@@ -274,7 +280,6 @@ window.__ModuleLoader__.load({
      * @returns the dialog element.
      */
     function DeleteChatForm({ request, t }) {
-      ensureStyles()
       const translate = translator(t)
       const [phase, setPhase] = React.useState('loading')
       const [plan, setPlan] = React.useState(null)
@@ -413,6 +418,10 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
 
       apply(ctx) {
+        ctx.effect(() => {
+          mountStyles()
+          return () => { unmountStyles() }
+        }, 'dsh-delete-chat: styles')
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-delete-chat: dictionaries')
 
         ctx.slots.inject('sidebar.workspaces.session.menu.item', function* () {
