@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Delete Conversation",
+    "title": "Conversation Deletion",
     "description": "Permanently delete one conversation and every local copy of its data: session log, projection cache, workspace entries, spill files, and unreferenced attachments."
   }
 }

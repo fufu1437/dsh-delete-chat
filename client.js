@@ -3,8 +3,8 @@
  *
  * Two registrations, one operation:
  *
- * - `sidebar.workspaces.session.menu.item` adds "彻底删除对话 / Delete
- *   conversation permanently" to the shipped "..." menu of every Session row
+ * - `sidebar.workspaces.session.menu.item` adds "删除对话 / Delete
+ *   conversation" to the shipped "..." menu of every Session row
  *   (beside pin/rename/fork/archive);
  * - `shell.overlay` owns the confirmation dialog, because the surface must
  *   outlive the row menu it was opened from.
@@ -32,9 +32,9 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------------ */
 
     const zh = {
-      'menu.delete': '彻底删除对话…',
-      'menu.delete.aria': '彻底删除对话「{title}」',
-      'dialog.title': '彻底删除对话',
+      'menu.delete': '删除对话…',
+      'menu.delete.aria': '删除对话「{title}」',
+      'dialog.title': '删除对话',
       'dialog.desc': '将永久删除「{title}」及其在本机的全部数据。此操作不可撤销。',
       'dialog.loading': '正在统计将删除的数据…',
       'dialog.blocked': '无法删除',
@@ -57,7 +57,7 @@ window.__ModuleLoader__.load({
       'kind.spill': '溢写的工具输出',
       'kind.legacy-feedback': '旧版反馈记录',
       'kind.attachment': '附件',
-      'error.session-live': '该对话正在当前 Harness 进程中打开，Host 仍持有它的日志写入句柄，因此无法安全彻底删除。请重启 Harness 后再试。',
+      'error.session-live': '该对话正在当前 Harness 进程中打开，Host 仍持有它的日志写入句柄，因此无法安全删除。请重启 Harness 后再试。',
       'error.session-running': '该对话正在运行中，无法删除。请先停止它，重启 Harness 后再试。',
       'error.descendant-live': '该对话的子代理会话仍在当前 Harness 进程中运行，无法删除。请重启 Harness 后再试。',
       'error.invalid-session-id': '会话标识无效。',
@@ -65,9 +65,9 @@ window.__ModuleLoader__.load({
     }
 
     const en = {
-      'menu.delete': 'Delete conversation permanently…',
-      'menu.delete.aria': 'Delete conversation "{title}" permanently',
-      'dialog.title': 'Delete conversation permanently',
+      'menu.delete': 'Delete conversation…',
+      'menu.delete.aria': 'Delete conversation "{title}"',
+      'dialog.title': 'Delete conversation',
       'dialog.desc': 'This permanently erases "{title}" and every copy of its data on this machine. It cannot be undone.',
       'dialog.loading': 'Measuring what will be deleted…',
       'dialog.blocked': 'Cannot delete',
@@ -234,7 +234,7 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------------ */
 
     /**
-     * One "彻底删除对话" row in a Session's "..." menu.
+     * One "删除对话" row in a Session's "..." menu.
      * @param props - owner props (sessionId, displayTitle), the menu open-state
      *   hook, and the locale translator.
      * @returns the menu row.

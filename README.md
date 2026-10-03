@@ -1,10 +1,10 @@
-# Delete Conversation (@fufu1437/dsh-delete-chat)
+# Conversation Deletion (@fufu1437/dsh-delete-chat)
 
-A DeepSeek Harness (DSH) plugin that **permanently and thoroughly deletes one
-conversation** together with every local copy of its data.
+A DeepSeek Harness (DSH) plugin that **permanently deletes one conversation**
+together with every local copy of its data.
 
-Every Session row in the sidebar gains a "Delete conversation permanently…"
-entry in its `…` menu. It opens a confirmation dialog that first lists what
+Every Session row in the sidebar gains a "Delete conversation…" entry in its
+`…` menu. It opens a confirmation dialog that first lists what
 would be removed and how much space it occupies; nothing happens until you
 confirm.
 
@@ -94,7 +94,7 @@ half takes effect as the page loads.
 ## Usage
 
 1. Hover a conversation row in the left sidebar and open its `…` menu;
-2. choose "Delete conversation permanently…";
+2. choose "Delete conversation…";
 3. the dialog lists artifact classes, entry counts, and total size — or the
    refusal reason when deletion is blocked (for example, a running turn);
 4. press "Delete permanently", then read the freed-byte summary and any
