@@ -47,7 +47,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync } from 'node:fs'
-import { readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { createZstdDecompress } from 'node:zlib'
@@ -69,6 +69,8 @@ const MAX_BODY_BYTES = 16 * 1024
 const SESSION_ID_MAX_LENGTH = 200
 /** Default ceiling on how many sibling session logs the attachment proof reads. */
 const DEFAULT_SCAN_LIMIT = 500
+/** Overwrite block for in-place erasure of a session a live writer still holds. */
+const WIPE_CHUNK_BYTES = 1024 * 1024
 /** Default ceiling on decompressed bytes the attachment proof reads, in bytes. */
 const DEFAULT_SCAN_BYTE_LIMIT = 2 * 1024 * 1024 * 1024
 /** Durable normalized attachment references are `sha256:<64 lowercase hex>`. */
@@ -227,6 +229,64 @@ async function writeJsonAtomic(file, value) {
   const temp = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`)
   await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
   await rename(temp, file)
+}
+
+/**
+ * Overwrite one file's bytes with zeros and flush, without unlinking it.
+ *
+ * A session the Host still has open keeps a descriptor on its log, so `unlink`
+ * alone would leave the content readable in the orphaned inode until the
+ * process exits. Writing over the same inode destroys those bytes first, which
+ * is what makes erasure real while the writer is alive.
+ * @param file - the file to overwrite.
+ * @returns true when the bytes were overwritten (or the file was already empty).
+ */
+export async function wipeFileContent(file) {
+  let handle
+  try {
+    handle = await open(file, 'r+')
+  } catch {
+    return false
+  }
+  try {
+    const info = await handle.stat()
+    if (!info.isFile() || info.size === 0) return true
+    const buffer = Buffer.alloc(Math.min(WIPE_CHUNK_BYTES, info.size))
+    let written = 0
+    while (written < info.size) {
+      const length = Math.min(buffer.length, info.size - written)
+      await handle.write(buffer, 0, length, written)
+      written += length
+    }
+    await handle.sync()
+    return true
+  } catch {
+    return false
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
+}
+
+/**
+ * Recursively overwrite every file under one path, leaving the tree for the
+ * caller's own removal. Failures are ignored per file: the deletion still
+ * removes what it can, and an unreadable file is reported as a failure by the
+ * caller's unlink step if it blocks removal.
+ * @param path - file or directory to overwrite.
+ */
+async function wipePath(path) {
+  const info = await statSafe(path)
+  if (info === undefined) return
+  if (info.isFile()) {
+    await wipeFileContent(path)
+    return
+  }
+  if (!info.isDirectory()) return
+  for (const entry of await readdirSafe(path, { withFileTypes: true })) {
+    const child = join(path, entry.name)
+    if (entry.isDirectory()) await wipePath(child)
+    else if (entry.isFile()) await wipeFileContent(child)
+  }
 }
 
 /**
@@ -620,27 +680,32 @@ export async function collectDescendants(ctx, id) {
  * @param id - the session id to delete.
  * @returns located targets plus the blocking reason when deletion is refused.
  */
-export async function planDeletion(ctx, config, id) {
+export async function planDeletion(ctx, config, id, options = {}) {
   if (typeof id !== 'string' || id.length === 0 || id.length > SESSION_ID_MAX_LENGTH) {
     return { sessionId: id, blocked: { code: 'invalid-session-id', message: 'session id must be a non-empty string of at most 200 characters' } }
   }
+  const forceLive = options.forceLive === true
   const facts = await readSessionFacts(ctx, id)
   const { live, running } = sessionLiveness(ctx, id)
   const descendants = config.deleteDescendants ? await collectDescendants(ctx, id) : []
   const targetIds = [id, ...descendants]
-  const liveDescendants = descendants.filter(candidate => sessionLiveness(ctx, candidate).live)
+  const liveness = new Map(targetIds.map(targetId => [targetId, sessionLiveness(ctx, targetId)]))
+  const runningIds = targetIds.filter(targetId => liveness.get(targetId).running)
+  const liveIds = targetIds.filter(targetId => liveness.get(targetId).live)
 
-  const blocked = live
+  // A turn in flight is the one case that stays refused: the conversation is
+  // writing right now, and interrupting it is the user's call, not ours.
+  const blocked = runningIds.length > 0
     ? {
-        code: running ? 'session-running' : 'session-live',
-        message: running
-          ? 'this conversation is running in the current Harness process; stop it and restart the Harness before deleting it'
-          : 'this conversation is open in the current Harness process, which still holds its log write handle; restart the Harness before deleting it',
+        code: 'session-running',
+        message: `still generating a response in this Harness process: ${runningIds.join(', ')}; stop it before deleting`,
       }
-    : liveDescendants.length > 0
+    : liveIds.length > 0 && !forceLive
       ? {
-          code: 'descendant-live',
-          message: `this conversation's subagent sessions are still live in the current Harness process: ${liveDescendants.join(', ')}; restart the Harness before deleting it`,
+          code: liveIds.includes(id) ? 'session-live' : 'descendant-live',
+          // The client turns this flag into a second, explicit confirmation.
+          forceable: true,
+          message: `open in this Harness process: ${liveIds.join(', ')}; deleting it overwrites its files in place and it leaves the session list only after the Harness restarts`,
         }
       : undefined
 
@@ -656,6 +721,8 @@ export async function planDeletion(ctx, config, id) {
     trees.push({
       id: targetId,
       isTarget: targetId === id,
+      // A live tree must be overwritten before it is unlinked (see wipePath).
+      live: liveness.get(targetId).live,
       header: targetFacts?.header,
       sessionArtifacts: await locateSessionArtifacts(config, targetId, targetFacts?.header?.cwd),
       projectionCache: await locateProjectionCache(config, targetId),
@@ -692,10 +759,13 @@ export async function executeDeletion(ctx, config, plan) {
   const warnings = []
   const trees = plan.trees ?? []
 
-  const removePath = async (kind, path) => {
+  const removePath = async (kind, path, wipe = false) => {
     try {
+      // Overwrite first for a live session: its writer's descriptor would keep
+      // the bytes readable in the orphaned inode after an unlink.
+      if (wipe) await wipePath(path)
       await rm(path, { recursive: true, force: true })
-      deleted.push({ kind, path })
+      deleted.push(wipe ? { kind, path, wiped: true } : { kind, path })
     } catch (error) {
       failures.push({ kind, path, message: String(error?.message ?? error) })
     }
@@ -734,9 +804,10 @@ export async function executeDeletion(ctx, config, plan) {
   //    conversation and for each durable subagent session it spawned.
   for (const tree of trees) {
     const prefix = tree.isTarget ? '' : 'subagent-'
+    const wipe = tree.live === true
     const artifacts = tree.sessionArtifacts ?? await locateSessionArtifacts(config, tree.id, tree.header?.cwd)
-    for (const dir of artifacts.dirs) await removePath(`${prefix}session-log`, dir)
-    for (const file of artifacts.files) await removePath(`${prefix}session-file`, file)
+    for (const dir of artifacts.dirs) await removePath(`${prefix}session-log`, dir, wipe)
+    for (const file of artifacts.files) await removePath(`${prefix}session-file`, file, wipe)
 
     // 3. Derived title/prompt cache records, including backup-and-skip copies.
     for (const file of tree.projectionCache ?? await locateProjectionCache(config, tree.id)) {
@@ -777,6 +848,12 @@ export async function executeDeletion(ctx, config, plan) {
       )
     }
     await pruneLlmUploadCache(config, new Set(attachments.deletable), deleted, warnings)
+  }
+
+  if (trees.some(tree => tree.live === true)) {
+    warnings.push(
+      'the conversation was open in this Harness process: its bytes were overwritten in place, and it leaves the session list only after the Harness restarts',
+    )
   }
 
   // 7. Tell every connected client the rows are gone, so the sidebar drops
@@ -964,6 +1041,7 @@ function parseBody(text) {
   if (typeof body.sessionId !== 'string' || body.sessionId.length === 0) return undefined
   return {
     sessionId: body.sessionId,
+    force: body.force === true,
     deleteAttachments: typeof body.deleteAttachments === 'boolean' ? body.deleteAttachments : undefined,
   }
 }
@@ -1009,7 +1087,7 @@ export function apply(ctx, config) {
         : { ...resolved, deleteAttachments: parsed.deleteAttachments }
       let plan
       try {
-        plan = await planDeletion(ctx, effective, parsed.sessionId)
+        plan = await planDeletion(ctx, effective, parsed.sessionId, { forceLive: parsed.force })
       } catch (error) {
         sendJson(res, 500, { ok: false, code: 'resolve-failed', message: String(error?.message ?? error) })
         return
@@ -1052,6 +1130,7 @@ export const __test = {
   discoverSpillRoots,
   planDeletion,
   executeDeletion,
+  wipeFileContent,
   planAttachments,
   attachmentPaths,
   requestImagePath,

@@ -13,9 +13,10 @@
  * immediately, with no pre-delete query, no inventory, and no byte totals.
  * Confirming closes the dialog at once and starts the deletion in the
  * background; the sidebar entry vanishes when the Host broadcasts the removal.
- * Only a failure — a conversation still running, an unreachable Host — comes
- * back, as a small alert card, because that is the one thing the user must not
- * miss.
+ * Two things still come back: a conversation this process still holds earns a
+ * second, explicit confirmation (its files are overwritten in place, and it
+ * leaves the session list only after a restart), and anything else that failed
+ * raises a small alert card, because the user must not miss it.
  *
  * The dialog renders its own controls and reads only `--dsw-alias-*` theme
  * tokens, so it matches the host in both themes without importing any Harness
@@ -44,8 +45,10 @@ window.__ModuleLoader__.load({
       'dialog.title': '删除对话',
       'dialog.desc': '将永久删除「{title}」及其在本机的全部数据。此操作不可撤销。',
       'dialog.note': '确认后删除在后台执行，本窗口会立即关闭；完成后该对话从侧边栏消失。',
+      'dialog.liveWarning': '该对话仍在本 Harness 进程中打开：Host 持有它的日志写入句柄，因此删除会先把磁盘内容原位覆写（写 0）再解链。它要到 Harness 重启后才会从会话列表彻底消失。',
       'dialog.cancel': '取消',
       'dialog.confirm': '永久删除',
+      'dialog.confirmForce': '仍然删除',
       'dialog.close': '关闭',
       'dialog.failed.title': '删除失败',
       'dialog.failed.desc': '「{title}」未能删除：{message}',
@@ -61,8 +64,10 @@ window.__ModuleLoader__.load({
       'dialog.title': 'Delete conversation',
       'dialog.desc': 'This permanently erases "{title}" and every copy of its data on this machine. It cannot be undone.',
       'dialog.note': 'The deletion runs in the background: this dialog closes now and the sidebar entry disappears when it finishes.',
+      'dialog.liveWarning': 'This conversation is still open in the current Harness process. The Host holds its log write handle, so the files are overwritten in place (zeros) before being unlinked, and it leaves the session list only after the Harness restarts.',
       'dialog.cancel': 'Cancel',
       'dialog.confirm': 'Delete permanently',
+      'dialog.confirmForce': 'Delete anyway',
       'dialog.close': 'Close',
       'dialog.failed.title': 'Deletion failed',
       'dialog.failed.desc': 'Could not delete "{title}": {message}',
@@ -98,6 +103,7 @@ window.__ModuleLoader__.load({
 .fdc-body{display:flex;flex-direction:column;gap:8px;padding:16px 20px 0}
 .fdc-body p{margin:0}
 .fdc-muted{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.fdc-live-warning{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-state-warn-primary)}
 .fdc-actions{display:flex;justify-content:flex-end;gap:8px;padding:20px 20px 0}
 .fdc-btn{padding:6px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;cursor:pointer}
 .fdc-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
@@ -194,6 +200,7 @@ window.__ModuleLoader__.load({
         const error = new Error(payload?.message ?? `request failed (${String(response.status)})`)
         error.code = payload?.code
         error.status = response.status
+        error.forceable = payload?.forceable === true
         throw error
       }
       return payload
@@ -285,10 +292,16 @@ window.__ModuleLoader__.load({
       }, [])
 
       const confirm = () => {
-        const { sessionId, displayTitle } = request
+        const { sessionId, displayTitle, force } = request
         // Close first: the deletion is a background operation from here on.
         store.write({ pending: null })
-        void postDelete({ sessionId }).catch((reason) => {
+        void postDelete(force === true ? { sessionId, force: true } : { sessionId }).catch((reason) => {
+          if (reason?.forceable === true) {
+            // The Host refused a conversation this process still holds, but it
+            // can erase one in place. That trade-off gets its own confirmation.
+            store.write({ pending: { sessionId, displayTitle, force: true } })
+            return
+          }
           store.write({ notice: { sessionId, displayTitle, message: describeFailure(reason, translate) } })
         })
       }
@@ -299,10 +312,15 @@ window.__ModuleLoader__.load({
       },
       h('h2', { className: 'fdc-title' }, translate('dialog.title')),
       h('p', { className: 'fdc-desc' }, translate('dialog.desc', { title: request.displayTitle })),
-      h('div', { className: 'fdc-body' }, h('p', { className: 'fdc-muted' }, translate('dialog.note'))),
+      h('div', { className: 'fdc-body' },
+        h('p', { className: 'fdc-muted' }, translate('dialog.note')),
+        request.force === true
+          ? h('p', { className: 'fdc-live-warning' }, translate('dialog.liveWarning'))
+          : null),
       h('div', { className: 'fdc-actions' },
         h('button', { type: 'button', className: 'fdc-btn', ref: cancelRef, onClick: close }, translate('dialog.cancel')),
-        h('button', { type: 'button', className: 'fdc-btn fdc-btn-danger', onClick: confirm }, translate('dialog.confirm'))))
+        h('button', { type: 'button', className: 'fdc-btn fdc-btn-danger', onClick: confirm },
+          translate(request.force === true ? 'dialog.confirmForce' : 'dialog.confirm'))))
     }
 
     /**

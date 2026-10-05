@@ -35,18 +35,25 @@ next list refresh.
 
 Deletion is irreversible, so the implementation follows two hard rules.
 
-**1. A live conversation is never touched.** The Host keeps an Agent and an
-open log write handle for every conversation opened in this process, and DSH
-exposes no public "release this session" API. Removing files under an open
-writer would leave the bytes in an unlinked inode — not actually erased — and
-the writer could recreate state. Therefore:
+**1. A conversation that is generating is left alone; one that is merely open
+is overwritten before it is unlinked.** The Host keeps an Agent and an open log
+write handle for every conversation opened in this process, and DSH exposes no
+public "release this session" API, so a plain `rm` under a live writer would
+leave the bytes readable in the orphaned inode — a fake deletion. Therefore:
 
-- the conversation is open in the current process → refused with `409 session-live`;
-- it is running a turn → refused with `409 session-running`;
-- one of its subagent sessions is still live → refused with `409 descendant-live`.
+- the conversation is generating a response (a turn is in flight) → refused with
+  `409 session-running`; stop it first;
+- it is open in this process but idle → refused once with `409 session-live`
+  (carrying `forceable: true`), and the UI asks for a **second confirmation**;
+  on confirmation the files are **overwritten with zeros and only then
+  unlinked**, so the bytes are really gone even though the writer still holds a
+  descriptor;
+- one of its subagent sessions is still live → `409 descendant-live`, same
+  forced confirmation.
 
-The dialog shows the refusal verbatim. Restart the Harness (or wait until the
-conversation is no longer active) and delete it then.
+The cost: such a conversation leaves the session list only after the Harness
+restarts, and if it is still open in a tab and you keep sending messages it may
+create a fresh (empty) log. The second confirmation says exactly that.
 
 **2. Nothing is deleted unless its absence is proven safe.** Attachment objects
 are content-addressed and may be shared between sessions, so an id is dropped
@@ -99,11 +106,12 @@ half takes effect as the page loads.
 3. the dialog shows the title, the irreversibility warning, and Cancel / Delete
    permanently — nothing is measured or listed first;
 4. press "Delete permanently": the dialog closes, the deletion continues in the
-   background, and the row disappears when the Host broadcasts the removal.
-
-Only a failure returns to the UI: a refused deletion (409 — for example a
-running conversation) raises a dismissible alert card in the corner with the
-reason.
+   background, and the row disappears when the Host broadcasts the removal;
+5. if the conversation is still open in this Harness process, a second
+   confirmation appears ("Delete anyway") explaining that the files are
+   overwritten in place and that it leaves the list only after a restart;
+6. any other failure (a response currently generating) raises a dismissible
+   alert card in the corner with the reason.
 
 ## Configuration
 
@@ -136,7 +144,7 @@ Override in the profile's `cordis.patch.yml`:
 ## Verification
 
 ```bash
-pnpm test          # fixture self-test: 59 assertions, touches no real data
+pnpm test          # fixture self-test: 68 assertions, touches no real data
 pnpm run check     # syntax-check both halves
 ```
 
@@ -150,7 +158,10 @@ context, and asserts **what survived**:
 - an attachment referenced by another session is kept; an exclusively
   referenced one is erased;
 - a truncated scan or an undecompressable log keeps the bytes and warns;
-- a hostile session id cannot escape the roots.
+- a hostile session id cannot escape the roots;
+- **the in-place overwrite really happens**: the test keeps an open descriptor on
+  the log (standing in for the live writer) and reads zeros through it after the
+  deletion, proving the content was erased rather than merely unlinked.
 
 `.tmp/e2e.mjs` is an end-to-end script against the **running Host** (never
 published): it mints the same browser-session cookie the page uses, creates a
@@ -165,8 +176,13 @@ corpus (187 session logs on this machine complete in about 1.5 s).
 
 ## Known limitations
 
-- **A live conversation cannot be deleted** until the Harness restarts (DSH has
-  no public session-release API). This is a deliberate safety trade-off.
+- **A conversation that is generating a response cannot be deleted** until it
+  stops; that is the one hard refusal, and it is deliberate.
+- **A conversation that was merely opened can be deleted, but its live session
+  object survives** until the Harness restarts (DSH has no public
+  session-release API): the bytes are overwritten and unlinked, yet the session
+  can still appear in the list or create a fresh empty log if you keep sending
+  messages in its open tab.
 - **Telemetry already exported cannot be recalled**: `session-telemetry-otel`
   may already have shipped a log prefix to a remote collector in
   `FEEDBACK_ONLY` mode; this plugin can only erase local data.

@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
@@ -284,13 +284,42 @@ check('no failures recorded', result.failures.length === 0)
 check('the report carries no byte total', result.removedBytes === undefined)
 check('client removal notification emitted', ctx.emitted.some(([event, id]) => event === 'api-session/removed' && id === TARGET))
 
-console.log('\nrefusals: a live or running conversation is never touched')
+console.log('\nrefusals: a live conversation needs a second, forced confirmation')
 const live = makeCtx({ liveIds: [TARGET] })
 const livePlan = await planDeletion(live, config, TARGET)
 equal('live conversation is blocked', livePlan.blocked?.code, 'session-live')
+check('the refusal is forceable', livePlan.blocked?.forceable === true)
+const forcedPlan = await planDeletion(live, config, TARGET, { forceLive: true })
+check('forcing resolves the plan', forcedPlan.blocked === undefined)
+check('the live tree is marked for in-place erasure', forcedPlan.trees.find(tree => tree.isTarget).live === true)
 const running = makeCtx({ liveIds: [TARGET], runningIds: [TARGET] })
 const runningPlan = await planDeletion(running, config, TARGET)
 equal('running conversation is blocked', runningPlan.blocked?.code, 'session-running')
+check('a running conversation is not forceable', runningPlan.blocked?.forceable === undefined)
+
+console.log('\nerasure: a live writer\'s open descriptor reads zeros after the delete')
+const wipeProbe = join(root, 'wipe-probe.bin')
+await write(wipeProbe, 'sensitive-conversation-content')
+await __test.wipeFileContent(wipeProbe)
+const probeBytes = await readFile(wipeProbe)
+check('wipeFileContent overwrites the bytes with zeros', probeBytes.length > 0 && probeBytes.every(byte => byte === 0))
+await rm(wipeProbe, { force: true })
+
+await buildFixture()
+const liveForWipe = makeCtx({ liveIds: [TARGET] })
+const wipePlan = await planDeletion(liveForWipe, config, TARGET, { forceLive: true })
+const logFile = join(projectDir, TARGET, 'session.v4.jsonl.zstd')
+const writerHandle = await open(logFile, 'r+')
+const beforeBytes = Buffer.alloc(8)
+await writerHandle.read(beforeBytes, 0, 8, 0)
+check('the log held content before deletion', !beforeBytes.every(byte => byte === 0))
+const wipeResult = await executeDeletion(liveForWipe, config, wipePlan)
+const afterBytes = Buffer.alloc(8)
+await writerHandle.read(afterBytes, 0, 8, 0)
+await writerHandle.close()
+check('the still-open writer descriptor now reads zeros', afterBytes.every(byte => byte === 0))
+check('the log path is gone from the filesystem', !exists(logFile))
+check('the report explains the in-place overwrite', wipeResult.warnings.some(warning => warning.includes('overwritten in place')))
 
 console.log('\nsubagent descendants are deleted with the parent')
 await buildFixture()
@@ -307,6 +336,7 @@ check('subagent deletion recorded no failure', treeResult.failures.length === 0)
 const liveChildCtx = makeCtx({ childOfTarget: true, liveIds: [CHILD] })
 const liveChildPlan = await planDeletion(liveChildCtx, config, TARGET)
 equal('a live descendant blocks the whole deletion', liveChildPlan.blocked?.code, 'descendant-live')
+check('the descendant refusal is forceable too', liveChildPlan.blocked?.forceable === true)
 
 console.log('\nattachment proof: an unreadable sibling keeps the bytes')
 await buildFixture()
